@@ -1,11 +1,11 @@
 ---
-version: '2'
+version: '3.7'
 volumes:
   krb5kdc-data:
 
 services:
   kdc:
-    image: gcavalcante8808/krb5-server
+    image: krb5-kdc:latest
     container_name: krb5-kdc
     restart: always
     ports:
@@ -20,9 +20,11 @@ services:
       - krb5kdc-data:/var/lib/krb5kdc
 
   remctld:
-    image: ubuntu:latest
+    image: remctld:latest
     container_name: remctld
     ports:
       - "4373:4373"
     volumes:
-
+      - ./remctld.keytab:/config/krb5.keytab:ro
+      - ./conf.d:/config/conf.d:ro
+      - ./scripts:/scripts:ro
