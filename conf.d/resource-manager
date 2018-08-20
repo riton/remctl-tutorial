@@ -1,1 +1,3 @@
-resource-manager does-resource-exist /scripts/resource-manager/does-resource-exist ANYUSER
+krb5-host-service-principal does-exist /scripts/krb5-host-service-principal ANYUSER
+krb5-host-service-principal create /scripts/krb5-host-service-principal ANYUSER
+krb5-host-service-principal extract-keytab /scripts/krb5-host-service-principal ANYUSER

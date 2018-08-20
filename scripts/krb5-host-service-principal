@@ -15,23 +15,12 @@ class Krb5PrincipalAlreadyExist(Krb5Exception):
 class Krb5PrincipalNotExist(Krb5Exception):
   pass
 
-class Krb5PrincipalManager(object):
-  '''Abstract Principal manager'''
-
-  ENCTYPES = [ 'aes256-cts-hmac-sha1-96' ]
-
-  def __init__(self):
-    pass
-
-  def create(self, principal):
-    '''Create krb5 principal'''
-    pass
-
-  def exists(self, principal):
-    '''Check whether a kerberos principal exists'''
-    pass
-
 class Krb5Keytab(object):
+  '''
+  A kerberos keytab object
+  It contains a set of keys related to a principal
+  and versioned with a kvno
+  '''
   def __init__(self, principal, keys, kvno):
     self.keys = keys
     self.kvno = kvno
@@ -57,6 +46,9 @@ class Krb5Keytab(object):
     }
 
 class Krb5Key(object):
+  '''
+  A kerberos key for a particular enctype
+  '''
   def __init__(self, enctype, key=None):
     self.enctype = enctype
 
@@ -81,10 +73,31 @@ class Krb5Key(object):
       'key': self.key
     }
 
+class Krb5PrincipalManager(object):
+  '''Abstract Principal manager'''
+
+  ENCTYPES = [ 'aes256-cts-hmac-sha1-96' ]
+
+  def __init__(self):
+    pass
+
+  def create(self, principal):
+    '''Create krb5 principal'''
+    pass
+
+  def exists(self, principal):
+    '''Check whether a kerberos principal exists'''
+    pass
+
+  def extract_keytab(self, principal, rekey=False):
+    '''Extract a keytab for principal'''
+    pass
+
 class FakeKrb5PrincipalManager(Krb5PrincipalManager):
   '''
   Fake kerberos principal manager.
-  Use FileSystem to preserve states between calls
+  Use FileSystem and JSON serialization
+  to preserve states between calls
   '''
   def __init__(self):
     self.tmpdir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'krb5-dummy-database')
@@ -102,7 +115,8 @@ class FakeKrb5PrincipalManager(Krb5PrincipalManager):
     return os.path.isfile(backend_princfile)
 
   def _princ_file(self, principal):
-    return os.path.join(self.tmpdir, principal)
+    '''File used a the backend to store principal informations (keys and kvno)'''
+    return os.path.join(self.tmpdir, principal.replace("/", "_"))
 
   def _parse_princ_file(self, principal):
     '''
@@ -144,16 +158,31 @@ class FakeKrb5PrincipalManager(Krb5PrincipalManager):
     kdb_entry['kvno'] = kdb_entry['kvno'] + 1 # increment kvno like `random-key` does
 
     return kdb_entry
-      
+
+  def _write_kdb_entry(self, kdb_entry):
+    '''
+    Write a fake KDB entry on disk
+    Use JSON format
+    '''
+    principal = kdb_entry['principal']
+
+    serialized = {
+      'principal': principal,
+      'kvno': kdb_entry['kvno'],
+      'keys': [ x.to_dict() for x in kdb_entry['keys'] ]
+    }
+
+    with open(self._princ_file(principal), 'w') as f:
+      f.write(json.dumps(serialized))
 
   def create(self, principal):
     '''
     Simulate the creation of a kerberos principal.
     We just create a file with the principal name here
+    and use UUIDs to emulate the kerberos keys
     '''
     if self._princ_exist(principal):
       raise Krb5PrincipalAlreadyExist(principal)
-
     
     kdb_entry = self._generate_kdb_fake_entry(principal, initial_creation=True)
     self._write_kdb_entry(kdb_entry)
@@ -181,27 +210,10 @@ class FakeKrb5PrincipalManager(Krb5PrincipalManager):
     # extract the keytab
     return Krb5Keytab.from_kdbentry(kdb_entry).to_dict()
 
-
-  def _write_kdb_entry(self, kdb_entry):
-    '''
-    Write a fake KDB entry on disk
-    Use JSON format
-    '''
-    principal = kdb_entry['principal']
-
-    serialized = {
-      'principal': principal,
-      'kvno': kdb_entry['kvno'],
-      'keys': [ x.to_dict() for x in kdb_entry['keys'] ]
-    }
-
-    with open(self._princ_file(principal), 'w') as f:
-      f.write(json.dumps(serialized))
-
-
   def exists(self, principal):
     '''
     Check whether a kerberos principal exists
+    This just checks that the backend file exists
     '''
     return self._princ_exist(principal)
 
