@@ -6,15 +6,211 @@ import json
 import uuid
 import argparse
 
-class Krb5PrincipalManager(object):
+class Krb5Exception(Exception):
   pass
+
+class Krb5PrincipalAlreadyExist(Krb5Exception):
+  pass
+
+class Krb5PrincipalNotExist(Krb5Exception):
+  pass
+
+class Krb5PrincipalManager(object):
+  '''Abstract Principal manager'''
+
+  ENCTYPES = [ 'aes256-cts-hmac-sha1-96' ]
+
+  def __init__(self):
+    pass
+
+  def create(self, principal):
+    '''Create krb5 principal'''
+    pass
+
+  def exists(self, principal):
+    '''Check whether a kerberos principal exists'''
+    pass
+
+class Krb5Keytab(object):
+  def __init__(self, principal, keys, kvno):
+    self.keys = keys
+    self.kvno = kvno
+    self.principal = principal
+
+  @staticmethod
+  def from_kdbentry(kentry):
+    return Krb5Keytab(kentry['principal'], kentry['keys'], kentry['kvno'])
+
+  def __repr__(self):
+    return 'Krb5Keytab<principal=%s, kvno=%d, keys=%s>' % (
+      self.principal,
+      self.kvno,
+      self.keys
+    )
+
+  def to_dict(self):
+    return {
+      'type': 'Krb5Keytab',
+      'principal': self.principal,
+      'kvno': self.kvno,
+      'keys': [ x.to_dict() for x in self.keys ]
+    }
+
+class Krb5Key(object):
+  def __init__(self, enctype, key=None):
+    self.enctype = enctype
+
+    if key is None:
+      self.key = self._new_key(enctype)
+    else:
+      self.key = key
+    
+  @staticmethod
+  def _new_key(enctype):
+    return str(uuid.uuid4())
+
+  def __repr__(self):
+    return 'Krb5Key<enctype=%s, key=%s>' % (
+      self.enctype,
+      self.key
+    )
+
+  def to_dict(self):
+    return {
+      'enctype': self.enctype,
+      'key': self.key
+    }
+
+class FakeKrb5PrincipalManager(Krb5PrincipalManager):
+  '''
+  Fake kerberos principal manager.
+  Use FileSystem to preserve states between calls
+  '''
+  def __init__(self):
+    self.tmpdir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'krb5-dummy-database')
+    if not os.path.isdir(self.tmpdir):
+      os.mkdir(self.tmpdir)
+
+  def _princ_exist(self, principal):
+    '''
+    Check whether a principal exist.
+    In this stupid implementation, we just check that a file
+    exists on the filesystem
+    '''
+
+    backend_princfile = os.path.join(self.tmpdir, principal)
+    return os.path.isfile(backend_princfile)
+
+  def _princ_file(self, principal):
+    return os.path.join(self.tmpdir, principal)
+
+  def _parse_princ_file(self, principal):
+    '''
+    Load a krb5 principal backend file
+    '''
+    with open(self._princ_file(principal), 'r') as f:
+      content = json.load(f)
+
+    keys = [ Krb5Key(x['enctype'], x['key']) for x in content['keys'] ]
+
+    content['keys'] = keys
+
+    return content
+
+
+  def _generate_kdb_fake_entry(self, principal, initial_creation=False):
+    '''
+    Fake krb5 principal keys
+    * fake a kvno
+    * fake keys
+
+    If initial_creation is set to False, will update KVNO and generate new keys
+    '''
+
+    keys = [ Krb5Key(x) for x in self.__class__.ENCTYPES ]
+
+    if initial_creation:
+      kvno = 1
+      # use uuid to generate fake keys
+      return {
+        'principal': principal,
+        'kvno': kvno,
+        'keys': keys
+      }
+
+    kdb_entry = self._parse_princ_file(principal)
+
+    kdb_entry['keys'] = keys # update keys
+    kdb_entry['kvno'] = kdb_entry['kvno'] + 1 # increment kvno like `random-key` does
+
+    return kdb_entry
+      
+
+  def create(self, principal):
+    '''
+    Simulate the creation of a kerberos principal.
+    We just create a file with the principal name here
+    '''
+    if self._princ_exist(principal):
+      raise Krb5PrincipalAlreadyExist(principal)
+
+    
+    kdb_entry = self._generate_kdb_fake_entry(principal, initial_creation=True)
+    self._write_kdb_entry(kdb_entry)
+
+    # extract and return the keytab
+    return self.extract_keytab(principal, rekey=False)
+
+  def extract_keytab(self, principal, rekey=False):
+    '''
+    Simulate a `ktadd` or `extract_keytab` operation
+    '''
+    if not self._princ_exist(principal):
+      raise Krb5PrincipalNotExist(principal)
+
+    kdb_entry = None
+    if rekey:
+      # update kvno and keys
+      kdb_entry = self._generate_kdb_fake_entry(principal, initial_creation=False)
+      self._write_kdb_entry(kdb_entry)
+
+    else:
+      # only fetch the fake db content
+      kdb_entry = self._parse_princ_file(principal)
+
+    # extract the keytab
+    return Krb5Keytab.from_kdbentry(kdb_entry).to_dict()
+
+
+  def _write_kdb_entry(self, kdb_entry):
+    '''
+    Write a fake KDB entry on disk
+    Use JSON format
+    '''
+    principal = kdb_entry['principal']
+
+    serialized = {
+      'principal': principal,
+      'kvno': kdb_entry['kvno'],
+      'keys': [ x.to_dict() for x in kdb_entry['keys'] ]
+    }
+
+    with open(self._princ_file(principal), 'w') as f:
+      f.write(json.dumps(serialized))
+
+
+  def exists(self, principal):
+    '''
+    Check whether a kerberos principal exists
+    '''
+    return self._princ_exist(principal)
 
 class Cli(object):
 
-  def __init__(self):
+  def __init__(self, krb5_provider):
     self.options = None
     self.request_id = None
-    self.kprovider = Krb5PrincipalManager()
+    self.kprovider = krb5_provider
 
   def _parse_args(self):
     parser = argparse.ArgumentParser(description='Kerberos service principals manager')
@@ -24,10 +220,14 @@ class Cli(object):
     eparser.add_argument('principal', help='Kerberos service principal to check for existence')
     eparser.set_defaults(func=self._does_exist)
 
-
     cparser = subparsers.add_parser('create', help='Create a Kerberos service principal')
     cparser.add_argument('principal', help='Kerberos service principal to create')
     cparser.set_defaults(func=self._create)
+
+    ekparser = subparsers.add_parser('extract-keytab', help='Extract a Kerberos service principal keytab')
+    ekparser.add_argument('principal', help='Kerberos service principal to extract keytab for')
+    ekparser.add_argument('--random-key', help='Generate a new random key for service principal', action='store_true', default=False)
+    ekparser.set_defaults(func=self._extract_keytab)
 
     return parser.parse_args()
 
@@ -35,14 +235,24 @@ class Cli(object):
     return {
       'success': True,
       'result': {
-        'exists': True
+        'exists': self.kprovider.exists(self.options.principal)
       }
     }
 
   def _create(self):
-    print "CREATE: %s" % self.options.principal
     return {
-      'success': True
+      'success': True,
+      'result': {
+        'keytab': self.kprovider.create(self.options.principal)
+      }
+    }
+
+  def _extract_keytab(self):
+    return {
+      'success': True,
+      'result': {
+        'keytab': self.kprovider.extract_keytab(self.options.principal, rekey=self.options.random_key)
+      }
     }
 
   @staticmethod
@@ -70,7 +280,8 @@ class Cli(object):
 
 
 def main():
-  sys.exit(Cli().run())
+  krb5_provider = FakeKrb5PrincipalManager()
+  sys.exit(Cli(krb5_provider).run())
 
 if __name__ == '__main__':
   main()
